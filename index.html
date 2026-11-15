@@ -137,6 +137,9 @@ const TUNE = {
     runHold: 0.40,        // seconds the hero keeps running after finger-walking stops
     airCarry: true,       // keep that run speed for the whole jump if it started while running
     landCarry: 0.30,      // ... and this long after landing
+    airPush: 1.0,         // AIR PUSH: run speed (0..1) the hero gets when the direction hand swipes while he is in the air
+    airPushKick: 0.75,    // ... how much of that speed arrives instantly (the rest builds up)
+    pushBuffer: 0.5,      // ... seconds a swipe made just BEFORE a jump still counts as a push
     coyote: 0.22,         // seconds you can still jump after walking off a ledge
     jumpBuffer: 0.25,     // seconds an early jump input is remembered
     spinBuffer: 0.30,     // seconds an early spin input is remembered
@@ -314,6 +317,7 @@ const Snd = (() => {
     back:   () => { tone('square', 520, 0, 0.06, 0.07); tone('square', 390, 0, 0.1, 0.07, 0.06); },
     pause:  () => { tone('square', 660, 0, 0.08, 0.08); tone('square', 440, 0, 0.12, 0.08, 0.09); },
     turn:   () => tone('triangle', 480, 720, 0.06, 0.08),
+    push:   () => { hiss(0.18, 0.16, 800, 2600, 1.1); tone('square', 300, 560, 0.1, 0.07); },
     tick:   () => tone('square', 1500, 0, 0.03, 0.05),
     lit:    () => tone('triangle', 880, 1320, 0.08, 0.08),
     clear:  () => seq('square', [64, 68, 71, 76, 0, 71, 76, 0, 80, 0, 83, 0, 88, 88], 0.11, 0.11),
@@ -1093,7 +1097,8 @@ const WORLDS = {
 // On-screen coaching. cam = text when playing with gestures, key = with the keyboard, touch = with the touch buttons.
 const HINTS = {
   start: { icon: 'run',  cam: ['FINGER-WALK TO RUN', 'SWIPE OTHER HAND TO TURN'], key: ['ARROW KEYS TO RUN'], touch: ['< AND > BUTTONS TO RUN'] },
-  jump:  { icon: 'palm', cam: ['OPEN PALM TO JUMP', 'OPEN-CLOSE-OPEN: DOUBLE JUMP'], key: ['SPACE TO JUMP', 'AGAIN IN THE AIR: DOUBLE JUMP'], touch: ['A BUTTON TO JUMP', 'AGAIN IN THE AIR: DOUBLE JUMP'] },
+  jump:  { icon: 'palm', cam: ['OPEN PALM TO JUMP', '+ SWIPE OTHER HAND TO PUSH'], key: ['SPACE TO JUMP', 'ARROWS STEER IN THE AIR'], touch: ['A BUTTON TO JUMP', '< > STEER IN THE AIR'] },
+  djump: { icon: 'palm', cam: ['OPEN-CLOSE-OPEN IN THE AIR', 'FOR A DOUBLE JUMP'], key: ['SPACE AGAIN IN THE AIR', 'FOR A DOUBLE JUMP'], touch: ['A AGAIN IN THE AIR', 'FOR A DOUBLE JUMP'] },
   stomp: { icon: 'palm', cam: ['LAND ON A GRUB TO STOMP IT'], key: ['LAND ON A GRUB TO STOMP IT'] },
   spin:  { icon: 'fist', cam: ['MAKE A FIST TO SPIN', "SPIKY ONES: SPIN, DON'T STOMP"], key: ['PRESS X TO SPIN', "SPIKY ONES: SPIN, DON'T STOMP"], touch: ['X BUTTON TO SPIN', "SPIKY ONES: SPIN, DON'T STOMP"] },
   quick: { icon: 'palm', cam: ['QUICKSAND!', 'KEEP JUMPING TO GET OUT'], key: ['QUICKSAND!', 'KEEP JUMPING TO GET OUT'] },
@@ -1128,7 +1133,7 @@ const COURSES = [
           '        c c           c c                       ',
           ' c c         r    G             c         g     ',
           '#########  ##################   ################'],
-        zones: [{ type: 'hint', id: 'stomp', from: 11, to: 26 }],
+        zones: [{ type: 'hint', id: 'djump', from: 0, to: 10 }, { type: 'hint', id: 'stomp', from: 11, to: 26 }],
       },
       { // C - crawlers and the high road over them
         rows: [
@@ -1690,7 +1695,7 @@ class Sandworm {
 const Input = {
   keys: new Set(), edges: new Set(), lastDir: 0,
   touch: { left: false, right: false, jump: false, spin: false },
-  ctl: { run: 0, face: 0, jump: false, spin: false, held: false, sticky: false },
+  ctl: { run: 0, face: 0, push: 0, jump: false, spin: false, held: false, sticky: false },
   down(code) { if (!this.keys.has(code)) this.edges.add(code); this.keys.add(code); if (LEFT.has(code)) this.lastDir = -1; if (RIGHT.has(code)) this.lastDir = 1; },
   up(code) { this.keys.delete(code); },
   any(set) { for (const k of set) if (this.keys.has(k)) return true; return false; },
@@ -1700,13 +1705,13 @@ const Input = {
     const c = this.ctl, t = this.touch;
     const l = this.any(LEFT) || t.left, r = this.any(RIGHT) || t.right;
     c.face = l && r ? this.lastDir : l ? -1 : r ? 1 : 0;
-    c.run = l || r ? 1 : 0; c.sticky = false;
+    c.run = l || r ? 1 : 0; c.sticky = false; c.push = 0;
     c.jump = this.edge(JUMP) || t.jumpEdge; c.spin = this.edge(SPIN) || t.spinEdge;
     c.held = this.any(JUMP) || t.jump;
     t.jumpEdge = t.spinEdge = false;
     if (gest) {
       if (gest.run > c.run) { c.run = gest.run; c.sticky = true; }
-      if (gest.face) c.face = gest.face;
+      if (gest.face) c.face = c.push = gest.face;        // a swipe turns the hero, and pushes him if he is in the air
       c.jump = c.jump || gest.jump; c.spin = c.spin || gest.spin; c.held = c.held || gest.palm;
     }
     this.edges.clear();
@@ -1746,7 +1751,7 @@ const Game = {
     const gy = L.surfaceBelow(this.respawnAt.x, this.respawnAt.y - 20, 80);
     this.hero = {
       x: this.respawnAt.x, y: gy === null ? this.respawnAt.y : gy, vx: 0, vy: 0, w: 12, h: 24, facing: 1, onGround: false,
-      coyote: 0, jumpBuf: 0, spinBuf: 0, airJumps: 0, spinT: 0, spinCd: 0, spinHit: new Set(), invuln: 1, stun: 0,
+      coyote: 0, jumpBuf: 0, spinBuf: 0, pushBuf: 0, pushDir: 0, airJumps: 0, spinT: 0, spinCd: 0, spinHit: new Set(), invuln: 1, stun: 0,
       pips: D.pips, dead: false, carry: 0, landT: 9, anim: 0, runPhase: 0, inQuick: false, combo: 0, hitWall: 0,
     };
     this.enemies = []; this.pickups = []; this.props = []; this.parts = []; this.pops = []; this.corpses = [];
@@ -1812,13 +1817,25 @@ const Game = {
     if (h.dead) { h.vy = Math.min(h.vy + T.gravity * dt, 420); h.y += h.vy * dt; return; }
     const can = h.stun <= 0 && this.state === 'play';
 
-    // ---- run + face. `carry` keeps a gesture run going through a jump (see TUNE.feel) ----
+    // ---- air push: a swipe of the direction hand shoves the hero sideways through the air.
+    //      Running and jumping share the action hand, so without this a standing jump could
+    //      only go straight up. A swipe just before the jump counts too (pushBuffer). ----
+    h.pushBuf = Math.max(0, h.pushBuf - dt);
+    if (ctl.push) { h.pushBuf = F.pushBuffer; h.pushDir = ctl.push; }
+    if (h.pushBuf > 0 && !h.onGround && can) {
+      const kick = h.pushDir * T.runSpeed * F.airPush * F.airPushKick;
+      h.pushBuf = 0; h.facing = h.pushDir; h.carry = Math.max(h.carry, F.airPush);
+      if (h.pushDir > 0 ? h.vx < kick : h.vx > kick) h.vx = kick;
+      Snd.sfx('push');
+      for (let i = 0; i < 7; i++) this.part(h.x - h.pushDir * 7, h.y - 4 - i * 3, -h.pushDir * rnd(50, 110), rnd(-12, 12), rnd(0.18, 0.32), i % 2 ? '#fff' : '#9af4f6', 2);
+    }
+    // ---- run + face. `carry` keeps a gesture run (or an air push) going through a jump (see TUNE.feel) ----
     let run = 0;
     if (can) {
       if (ctl.face && ctl.face !== h.facing) { h.facing = ctl.face; Snd.sfx('turn'); }
       run = ctl.run;
-      if (run > 0) h.carry = ctl.sticky ? run : 0;
-      else if (F.airCarry && h.carry > 0) { if (!h.onGround || h.landT < F.landCarry) run = h.carry; else h.carry = 0; }
+      if (run > 0) h.carry = ctl.sticky && F.airCarry ? run : 0;
+      else if (h.carry > 0) { if (!h.onGround || h.landT < F.landCarry) run = h.carry; else h.carry = 0; }
     }
     const wind = this.windAt(h.x); this.windNow = wind;
     const target = h.facing * run * T.runSpeed * (h.inQuick ? 0.45 : 1) + wind * (h.onGround && run === 0 ? 0.6 : 1);
@@ -2091,7 +2108,7 @@ const Game = {
     const hint = !quiet && this.hint && HINTS[this.hint];
     if (hint && !(this.bossOn && this.boss && this.boss.state !== 'intro' && this.boss.state !== 'prowl')) {
       const lines = camOn ? hint.cam : (App.sawTouch && hint.touch) || hint.key, w = Math.max(...lines.map(l => Font.width(l, 2))) + 38, hh = lines.length * 17 + 7;
-      const x = Math.round(((camOn ? 372 : VIEW_W) - w) / 2), y = 30;
+      const x = Math.max(2, Math.round(((camOn ? 372 : VIEW_W) - w) / 2)), y = 30;
       ctx.globalAlpha = 0.72; ctx.fillStyle = '#140c28'; ctx.fillRect(x, y, w, hh); ctx.globalAlpha = 1;
       ctx.fillStyle = '#ffe36e'; ctx.fillRect(x, y, w, 1); ctx.fillRect(x, y + hh - 1, w, 1);
       drawSpr(ctx, SPR.icons[hint.icon], x + 15, y + hh / 2);
@@ -2542,6 +2559,7 @@ const Gest = {
   },
 
   /* ----- DIRECTION HAND: a fast swipe left or right -----
+     (the game uses it to turn the hero and, in the air, to push him that way)
      Looks back over the last moments for a stretch where the hand travelled far
      enough, fast enough. A really fast swipe often makes the tracker lose the hand
      for a frame or two (it reappears further along), so a stretch that contains
@@ -2911,7 +2929,7 @@ Screens.calib = {
     if (this.step === 'pick') {
       const k = clamp(this.pickT / 0.9, 0, 1), bx = this.pickSide === 'left' ? px : px + pw / 2;
       if (k > 0) { ctx.fillStyle = INK; ctx.fillRect(bx + 6, py + ph - 12, pw / 2 - 12, 8); ctx.fillStyle = '#8dffc0'; ctx.fillRect(bx + 7, py + ph - 11, Math.round((pw / 2 - 14) * k), 6); }
-      text(ctx, 'THE ACTION HAND RUNS, JUMPS AND ATTACKS. THE OTHER HAND TURNS.', VIEW_W / 2, 214, { a: 'c', c: '#b4fbff' });
+      text(ctx, 'THE ACTION HAND RUNS, JUMPS AND ATTACKS. THE OTHER HAND TURNS AND PUSHES.', VIEW_W / 2, 214, { a: 'c', c: '#b4fbff' });
       text(ctx, 'OR TAP A BUTTON', VIEW_W / 2, 226, { a: 'c', c: '#b9bed3' });
     } else if (this.step === 'show') {
       const n = Gest.hands.length;
@@ -2919,7 +2937,7 @@ Screens.calib = {
       text(ctx, 'OR TAP A BUTTON TO PICK YOUR ACTION HAND', VIEW_W / 2, 226, { a: 'c', c: '#b9bed3' });
     } else {
       text(ctx, 'ORANGE = ACTION HAND: FINGER-WALK, OPEN PALM, FIST', VIEW_W / 2, 214, { a: 'c', c: '#ffb02e' });
-      text(ctx, 'BLUE = TURN HAND: SWIPE LEFT OR RIGHT', VIEW_W / 2, 226, { a: 'c', c: '#5ce6ff' });
+      text(ctx, 'BLUE = OTHER HAND: SWIPE TO TURN, SWIPE IN THE AIR TO PUSH', VIEW_W / 2, 226, { a: 'c', c: '#5ce6ff' });
     }
     if (this.step !== 'done') this.ui.draw(ctx, 0);
   },
@@ -3013,7 +3031,7 @@ Screens.options = {
 const TEST_JUMP = new Set(['Space', 'KeyZ', 'KeyW']);
 const TEST_TILES = [
   { id: 'run', icon: 'run', name: ['RUN'] }, { id: 'jump', icon: 'palm', name: ['JUMP'] }, { id: 'djump', icon: 'palm', name: ['DOUBLE', 'JUMP'] },
-  { id: 'spin', icon: 'fist', name: ['SPIN'] }, { id: 'left', icon: 'left', name: ['TURN', 'LEFT'] }, { id: 'right', icon: 'right', name: ['TURN', 'RIGHT'] },
+  { id: 'spin', icon: 'fist', name: ['SPIN'] }, { id: 'left', icon: 'left', name: ['SWIPE', 'LEFT'] }, { id: 'right', icon: 'right', name: ['SWIPE', 'RIGHT'] },
 ];
 Screens.test = {
   enter(from) {
