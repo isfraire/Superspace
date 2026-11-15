@@ -82,7 +82,7 @@ const TUNE = {
     minScore: 0.50,         // (slider) minimum confidence for the built-in Open_Palm / Closed_Fist.
 
     // --- finger-walk (run) ---
-    walkSens: 0.55,         // (slider) 0..1, higher = smaller finger movements count as steps
+    walkSens: 0.65,         // (slider) 0..1, higher = smaller finger movements count as steps
     walkSwapEasy: 0.07,     // fingertip travel (in hand-lengths) that counts as a swap at sensitivity 1
     walkSwapHard: 0.32,     // ... and at sensitivity 0
     walkStartSwaps: 2,      // fingertip swaps needed before the hero starts running
@@ -100,16 +100,17 @@ const TUNE = {
     reopenDrop: 0.20,       // hand "openness" must drop this far below the open-palm level
                             //   before a new open palm counts as another jump (double jump)
     rearmTime: 0.70,        // ... or the palm must be gone this long (seconds)
-    fistAirDelay: 0.22,     // mid-air, a fist waits this long before spinning so that
+    fistAirDelay: 0.25,     // mid-air, a fist waits this long before spinning so that
                             //   open-close-open can be read as a double jump instead
     fistRepeat: 0,          // seconds between repeat spins while a fist is held (0 = one spin per fist)
 
     // --- direction-hand swipe (face left / right) ---
-    swipeSens: 0.50,        // (slider) 0..1, higher = slower swipes count
-    swipeSpeedEasy: 3.5,    // hand-lengths per second needed at sensitivity 1
-    swipeSpeedHard: 13,     // ... and at sensitivity 0
+    swipeSens: 0.60,        // (slider) 0..1, higher = slower swipes count
+    swipeSpeedEasy: 3,      // hand-lengths per second needed at sensitivity 1
+    swipeSpeedHard: 12,     // ... and at sensitivity 0   (default 0.6 -> about 6.6, roughly 0.6 m/s)
+    swipeGapFactor: 0.4,    // speed needed (as a fraction) when the tracker lost the hand mid-swipe
     swipeTravel: 1.0,       // minimum travel in hand-lengths
-    swipeWindow: 0.35,      // seconds of history searched for a swipe
+    swipeWindow: 0.45,      // seconds of history searched for a swipe
     swipeCooldown: 0.30,    // seconds before any new swipe
     swipeReturnBlock: 0.65, // seconds the opposite direction is ignored (the hand moving back)
 
@@ -126,7 +127,7 @@ const TUNE = {
      rendered frames before the next pass, which keeps it above 30 fps
      even when a pass is slow. Raise `budget` for a smoother game and
      slower tracking; lower it for the opposite.                        */
-  tracking: { maxHz: 30, budget: 0.065, camWidth: 640, camHeight: 480 },
+  tracking: { maxHz: 30, budget: 0.065, camWidth: 640, camHeight: 480, frameWidth: 400 },
 
   /* ---------- GAME FEEL (forgiveness) --------------------------------- */
   feel: {
@@ -1961,7 +1962,7 @@ const Game = {
   },
 
   /* ----- drawing ----- */
-  draw(ctx) {
+  draw(ctx, quiet) {
     const L = this.L, h = this.hero;
     const sx = this.shakeT > 0 ? Math.round(rnd(-1, 1) * this.shakeA) : 0, sy = this.shakeT > 0 ? Math.round(rnd(-1, 1) * this.shakeA) : 0;
     const cx = Math.round(this.cam.x) + sx, cy = Math.round(this.cam.y) + sy;
@@ -1994,7 +1995,7 @@ const Game = {
     for (const p of this.pops) if (p.t < 0.8 || Math.floor(p.t * 20) % 2) text(ctx, p.str, p.x, p.y - p.t * 22, { a: 'c', c: p.col });
     ctx.restore();
     this.drawWeather(ctx, cx);
-    this.drawHUD(ctx);
+    this.drawHUD(ctx, quiet);
   },
   drawHero(ctx) {
     const h = this.hero, H = SPR.hero, T = TUNE.hero;
@@ -2048,7 +2049,7 @@ const Game = {
       }
     }
   },
-  drawHUD(ctx) {
+  drawHUD(ctx, quiet) {
     const h = this.hero, D = TUNE.difficulty, camOn = Gest.live;
     ctx.globalAlpha = 0.5; ctx.fillStyle = '#140c28'; ctx.fillRect(0, 0, VIEW_W, 25); ctx.globalAlpha = 1;
     // lives
@@ -2079,7 +2080,7 @@ const Game = {
       }
     }
     // coaching hint: under the HUD, left of the camera preview, so the ground stays visible
-    const hint = this.hint && HINTS[this.hint];
+    const hint = !quiet && this.hint && HINTS[this.hint];
     if (hint && !(this.bossOn && this.boss && this.boss.state !== 'intro' && this.boss.state !== 'prowl')) {
       const lines = camOn ? hint.cam : hint.key, w = Math.max(...lines.map(l => Font.width(l, 2))) + 38, hh = lines.length * 17 + 7;
       const x = Math.round(((camOn ? 372 : VIEW_W) - w) / 2), y = 30;
@@ -2089,7 +2090,7 @@ const Game = {
       lines.forEach((l, i) => text(ctx, l, x + 30, y + 5 + i * 17, { s: 2, c: i ? '#b4fbff' : '#fff' }));
     }
     // banner
-    if (this.banner) {
+    if (this.banner && !quiet) {
       const b = this.banner, k = Math.min(1, b.t / 0.4);
       ctx.globalAlpha = 0.6 * k; ctx.fillStyle = '#140c28'; ctx.fillRect(0, 84, VIEW_W, 62); ctx.globalAlpha = k;
       text(ctx, b.a, VIEW_W / 2, 92, { s: 2, a: 'c', c: '#b4fbff' }); text(ctx, b.b, VIEW_W / 2, 114, { s: 3, a: 'c', c: '#ffe36e' });
@@ -2111,6 +2112,49 @@ const Game = {
 const MP_VERSION = '1.2.3';
 const MP_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@' + MP_VERSION;
 const MP_MODEL = 'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task';
+const MP_OPTIONS = { runningMode: 'VIDEO', numHands: 2, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5 };
+// Address options for troubleshooting:  ?tracker=main  (no worker)   ?tracker=worker  (worker only)
+//                                       ?cpu=1  (never use the GPU)   ?frames=pixels  (copy pixels instead of ImageBitmaps)
+const PARAMS = new URLSearchParams(location.search);
+
+/* The tracker runs in a Web Worker whenever the browser allows it, so a slow
+   hand-tracking pass can never stall the game: the page just posts camera
+   frames to the worker and gets landmarks back. If the worker cannot start
+   (older Safari has no WebGL in workers) tracking runs on the main thread
+   instead, throttled by TUNE.tracking.budget. */
+const WORKER_SRC = `
+let recs = {}, rec = null, make = null;
+self.onmessage = async (e) => {
+  const m = e.data;
+  try {
+    if (m.type === 'init') {
+      const mp = await import(m.base + '/vision_bundle.mjs');
+      const files = await mp.FilesetResolver.forVisionTasks(m.base + '/wasm', true);
+      // In a module worker the WASM loader is only evaluated once, so keep its factory
+      // and hand it back to MediaPipe each time a recognizer is created (GPU, then maybe CPU).
+      const factory = (await import(files.wasmLoaderPath)).default;
+      make = async (d) => {
+        if (!recs[d]) { self.ModuleFactory = factory; recs[d] = await mp.GestureRecognizer.createFromOptions(files, Object.assign({ baseOptions: { modelAssetPath: m.model, delegate: d } }, m.options)); }
+        return recs[d];
+      };
+      let d = m.cpu ? 'CPU' : 'GPU';
+      try { rec = await make(d); } catch (err) { if (d === 'CPU') throw err; d = 'CPU'; rec = await make(d); }
+      self.postMessage({ type: 'ready', delegate: d });
+    } else if (m.type === 'delegate') {
+      rec = await make(m.delegate);
+      self.postMessage({ type: 'delegate', delegate: m.delegate });
+    } else if (m.type === 'frame') {
+      const t0 = performance.now();
+      const img = m.bmp || new ImageData(new Uint8ClampedArray(m.buf), m.w, m.h);
+      let r, lum = -1;
+      if (m.check && m.bmp) {      // brightness of the frame as the worker sees it (guards against browsers that deliver black bitmaps)
+        try { const g = new OffscreenCanvas(8, 8).getContext('2d'); g.drawImage(m.bmp, 0, 0, 8, 8); const d = g.getImageData(0, 0, 8, 8).data; let sum = 0; for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2]; lum = sum / 192; } catch (err) {}
+      }
+      try { r = rec.recognizeForVideo(img, m.t); } finally { if (m.bmp) m.bmp.close(); }
+      self.postMessage({ type: 'result', t: m.t, cost: performance.now() - t0, lum, res: { landmarks: r.landmarks, handedness: r.handedness || r.handednesses, gestures: r.gestures } });
+    }
+  } catch (err) { self.postMessage({ type: 'error', at: m.type, message: String((err && err.message) || err) }); }
+};`;
 const HAND_LINKS = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]];
 
 // Messages for everything that can go wrong starting the camera / tracker.
@@ -2125,10 +2169,15 @@ const CAM_ERRORS = {
 
 const Gest = {
   state: 'off',            // off | starting | loading | ready | error
-  error: null, delegate: '', video: null, stream: null, recognizer: null,
-  aspect: 4 / 3, pv: null, pvg: null,
+  error: null, video: null, stream: null,
+  mode: '',                // 'worker' or 'main': where the tracker runs
+  delegate: '',            // 'GPU' or 'CPU'
+  worker: null, busy: false, warm: null, waitDelegate: null, recognizer: null, mk: null, bench: null,
+  aspect: 4 / 3, pv: null, pvg: null, pvn: null, pvng: null, cap: null, capg: null,
+  frameMode: typeof createImageBitmap === 'function' && PARAMS.get('frames') !== 'pixels' ? 'bitmap' : 'pixels',     // how frames reach the worker
+  lag: 0, gap: 0.07,       // seconds: age of the newest result, and time between results
   hands: [], action: null, dirHand: null, memA: null, memD: null, crossT: 0,
-  frames: 0, hz: 0, cost: 0, lastRunT: 0, lastVideoT: -1, since: 0, pending: false, fails: 0,
+  frames: 0, hz: 0, cost: 0, lastRunT: 0, lastVideoT: -1, since: 0, pending: false, fails: 0,   // cost = ms per tracking pass
   seenAny: 0, seenAction: 0,                 // seconds (performance clock) a hand was last seen
   // --- gesture output ---
   stable: 'none',                            // none | two | palm | fist  (action hand, after the hold-frames filter)
@@ -2141,7 +2190,7 @@ const Gest = {
   get live() { return this.state === 'ready'; },
   resetDetectors() {
     this.A = { raw: 'none', rawN: 0, armed: true, palmT: -9, palmOpen: 2, fistT: 0, fistWait: 0, lastJump: -9, mean: null, anchor: null, anchorMag: 0, swaps: [], poseT: -9, lastT: 0, speed: 0 };
-    this.D = { samples: [], scale: 0.1, coolT: 0, oppT: 0, lastDir: 0 };
+    this.D = { samples: [], scale: 0.1, coolT: 0, oppT: 0, lastDir: 0, lost: false };
     this.stable = 'none'; this.walking = false; this.ev.jump = this.ev.spin = false; this.ev.face = 0;
   },
 
@@ -2161,19 +2210,14 @@ const Gest = {
       if (!v.videoWidth) await new Promise((res) => { v.addEventListener('loadeddata', res, { once: true }); setTimeout(res, 3000); });
       this.aspect = (v.videoWidth || 4) / (v.videoHeight || 3);
       this.pv = mkCanvas(160, Math.round(160 / this.aspect)); this.pvg = this.pv.getContext('2d');
+      this.pvn = mkCanvas(this.pv.width, this.pv.height); this.pvng = this.pvn.getContext('2d');
+      const cw = Math.min(T.frameWidth, v.videoWidth || T.frameWidth);
+      this.cap = mkCanvas(cw, Math.round(cw / this.aspect)); this.capg = this.cap.getContext('2d', { willReadFrequently: true });
       this.state = 'loading'; phase = 'tracker';
-      if (!this.recognizer) {
-        const mp = await import(MP_BASE + '/vision_bundle.mjs');
-        const files = await mp.FilesetResolver.forVisionTasks(MP_BASE + '/wasm');
-        this.mk = (delegate) => mp.GestureRecognizer.createFromOptions(files, {
-          baseOptions: { modelAssetPath: MP_MODEL, delegate },
-          runningMode: 'VIDEO', numHands: 2,
-          minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
-        });
-        try { this.recognizer = await this.mk('GPU'); this.delegate = 'GPU'; }
-        catch (e) { this.recognizer = await this.mk('CPU'); this.delegate = 'CPU'; }
-      }
-      this.resetDetectors(); this.fails = 0; this.seenAny = now() / 1000;
+      if (!this.mode) await this.initEngine();
+      await this.warmUp();
+      this.resetDetectors(); this.fails = 0; this.cost = 0; this.lastRunT = 0; this.busy = false; this.seenAny = now() / 1000;
+      this.bench = { phase: this.delegate === 'GPU' ? 'gpu' : 'done', s: [], gpu: 0, skip: 0, switching: false };
       this.state = 'ready';
     } catch (e) {
       let code = e && e.code;
@@ -2190,6 +2234,51 @@ const Gest = {
       console.warn('SUPERSPACE camera/tracker:', code, e);
     }
   },
+  // Prefer a worker; fall back to the main thread if the worker cannot run the tracker.
+  async initEngine() {
+    const want = PARAMS.get('tracker');
+    if (want !== 'main' && window.Worker) {
+      try { await this.initWorker(); return; }
+      catch (e) {
+        if (this.worker) { this.worker.terminate(); this.worker = null; }
+        console.warn('SUPERSPACE: tracker worker unavailable, using the main thread.', e);
+        if (want === 'worker') throw e;
+      }
+    }
+    await this.initMain();
+  },
+  async initWorker() {
+    const w = this.worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })), { type: 'module' });
+    await new Promise((res, rej) => {
+      w.onerror = (e) => rej(new Error('worker failed: ' + ((e && e.message) || 'could not start')));
+      w.onmessage = (e) => { const m = e.data; if (m.type === 'ready') { this.delegate = m.delegate; res(); } else if (m.type === 'error') rej(new Error(m.message)); };
+      w.postMessage({ type: 'init', base: MP_BASE, model: MP_MODEL, options: MP_OPTIONS, cpu: PARAMS.get('cpu') === '1' });
+    });
+    w.onmessage = (e) => this.onWorker(e.data);
+    w.onerror = () => this.trackFailed();
+    this.mode = 'worker';
+  },
+  async initMain() {
+    const mp = await import(MP_BASE + '/vision_bundle.mjs');
+    const files = await mp.FilesetResolver.forVisionTasks(MP_BASE + '/wasm');
+    const recs = {};
+    this.mk = async (d) => recs[d] || (recs[d] = await mp.GestureRecognizer.createFromOptions(files, Object.assign({ baseOptions: { modelAssetPath: MP_MODEL, delegate: d } }, MP_OPTIONS)));
+    let d = PARAMS.get('cpu') === '1' ? 'CPU' : 'GPU';
+    try { this.recognizer = await this.mk(d); } catch (e) { if (d === 'CPU') throw e; d = 'CPU'; this.recognizer = await this.mk(d); }
+    this.delegate = d; this.mode = 'main';
+  },
+  // The very first pass compiles shaders and is slow: do it while the loading screen is up.
+  async warmUp() {
+    const once = () => this.mode === 'worker'
+      ? new Promise((res, rej) => { this.warm = { res, rej }; this.sendFrame(now()); })
+      : Promise.resolve(this.recognizer.recognizeForVideo(this.video, now()));
+    try { await once(); }
+    catch (e) { if (this.delegate !== 'GPU') throw e; await this.setDelegate('CPU'); await once(); }    // GPU path broken here: use the CPU
+  },
+  setDelegate(d) {
+    if (this.mode === 'worker') return new Promise((res, rej) => { this.waitDelegate = { res, rej }; this.worker.postMessage({ type: 'delegate', delegate: d }); });
+    return this.mk(d).then((r) => { this.recognizer = r; this.delegate = d; });
+  },
   stop() {
     if (this.stream) { for (const t of this.stream.getTracks()) t.stop(); this.stream = null; }
     if (this.video) this.video.srcObject = null;
@@ -2198,37 +2287,99 @@ const Gest = {
   },
 
   /* ----- scheduling: called after every rendered game frame -----
-     Tracking never runs inside the game step. After each pass the game gets
-     `ceil(cost * budget)` frames to itself, which holds it above 30 fps. */
+     Tracking never runs inside the game step.
+     Worker mode: post the newest camera frame whenever the worker is idle.
+     Main-thread mode: after each pass the game gets `ceil(cost * budget)`
+     frames to itself, which holds it above 30 fps. */
   afterFrame() {
-    if (this.state !== 'ready' || this.pending) return;
-    this.since++;
-    const T = TUNE.tracking, t = now();
-    if (this.since < Math.max(1, Math.ceil(this.cost * T.budget)) || t - this.lastRunT < 1000 / T.maxHz) return;
-    this.pending = true;
-    setTimeout(() => { this.pending = false; this.since = 0; this.track(); }, 0);
-  },
-  track() {
-    const v = this.video;
-    if (this.state !== 'ready' || !v || v.readyState < 2 || v.paused) return;
-    if (v.currentTime === this.lastVideoT) return;            // no new camera frame yet
-    this.lastVideoT = v.currentTime;
-    const t0 = now(); let res = null;
-    try { res = this.recognizer.recognizeForVideo(v, t0); this.fails = 0; }
-    catch (e) {
-      if (++this.fails >= 3 && this.delegate === 'GPU' && this.mk) {         // GPU path is broken on this device: fall back
-        this.delegate = 'CPU'; this.fails = 0;
-        this.mk('CPU').then(r => { this.recognizer = r; }).catch(() => {});
-      }
+    if (this.state !== 'ready') return;
+    const T = TUNE.tracking, t = now(), v = this.video;
+    if (!v || v.readyState < 2 || v.paused || t - this.lastRunT < 1000 / T.maxHz) return;
+    if (this.mode === 'worker') {
+      if (this.busy || v.currentTime === this.lastVideoT) return;
+      this.lastVideoT = v.currentTime; this.sendFrame(t);
       return;
     }
-    const t1 = now();
-    this.cost = this.cost ? lerp(this.cost, t1 - t0, 0.2) : t1 - t0;
-    if (this.lastRunT) this.hz = lerp(this.hz || 15, 1000 / Math.max(1, t0 - this.lastRunT), 0.15);
-    this.lastRunT = t0;
-    this.pvg.save(); this.pvg.translate(this.pv.width, 0); this.pvg.scale(-1, 1);            // mirrored preview frame
+    if (this.pending) return;
+    if (++this.since < Math.max(1, Math.ceil(this.cost * T.budget))) return;
+    this.pending = true;
+    setTimeout(() => { this.pending = false; this.since = 0; this.trackMain(); }, 0);
+  },
+  // worker mode: hand the current camera frame (unmirrored) to the worker.
+  // Preferred: a zero-copy ImageBitmap. Fallback: copy the pixels out through a small canvas.
+  sendFrame(t) {
+    const v = this.video, n = this.pvn;
+    this.busy = true;
+    this.pvng.save(); this.pvng.translate(n.width, 0); this.pvng.scale(-1, 1); this.pvng.drawImage(v, 0, 0, n.width, n.height); this.pvng.restore();   // mirrored preview of this exact frame
+    if (this.frameMode === 'bitmap') {
+      createImageBitmap(v).then(
+        (bmp) => { if (this.worker) this.worker.postMessage({ type: 'frame', bmp, t, check: !!this.warm }, [bmp]); else bmp.close(); },
+        () => { this.frameMode = 'pixels'; this.busy = false; });
+    } else {
+      const c = this.cap; this.capg.drawImage(v, 0, 0, c.width, c.height);
+      const id = this.capg.getImageData(0, 0, c.width, c.height);
+      this.worker.postMessage({ type: 'frame', buf: id.data.buffer, w: c.width, h: c.height, t }, [id.data.buffer]);
+    }
+  },
+  onWorker(m) {
+    if (m.type === 'delegate') { this.delegate = m.delegate; if (this.waitDelegate) { this.waitDelegate.res(); this.waitDelegate = null; } return; }
+    if (m.type === 'error' && m.at === 'delegate') { if (this.waitDelegate) { this.waitDelegate.rej(new Error(m.message)); this.waitDelegate = null; } return; }
+    this.busy = false;
+    if (m.type !== 'result' && this.frameMode === 'bitmap') {      // this browser's tracker can't take ImageBitmaps: send pixels instead
+      this.frameMode = 'pixels';
+      if (this.warm) this.sendFrame(now());
+      return;
+    }
+    if (this.warm) {
+      if (m.type === 'result' && this.frameMode === 'bitmap' && m.lum >= 0 && m.lum < 3) {     // worker got a black frame; is the camera really dark?
+        const d = this.pvng.getImageData(0, 0, this.pvn.width, this.pvn.height).data; let sum = 0;
+        for (let i = 0; i < d.length; i += 16) sum += d[i] + d[i + 1] + d[i + 2];
+        if (sum / (d.length / 16 * 3) > 12) { this.frameMode = 'pixels'; this.sendFrame(now()); return; }
+      }
+      const w = this.warm; this.warm = null; if (m.type === 'result') w.res(); else w.rej(new Error(m.message)); return;
+    }
+    if (m.type === 'result') { const s = this.pv; this.pv = this.pvn; this.pvn = s; const g = this.pvg; this.pvg = this.pvng; this.pvng = g; this.gotResult(m.res, m.t, m.cost); }
+    else this.trackFailed();
+  },
+  // main-thread mode
+  trackMain() {
+    const v = this.video;
+    if (this.state !== 'ready' || !v || v.readyState < 2 || v.paused || v.currentTime === this.lastVideoT) return;
+    this.lastVideoT = v.currentTime;
+    const t0 = now(); let res;
+    try { res = this.recognizer.recognizeForVideo(v, t0); } catch (e) { this.trackFailed(); return; }
+    this.pvg.save(); this.pvg.translate(this.pv.width, 0); this.pvg.scale(-1, 1);            // mirrored preview of the frame that was tracked
     this.pvg.drawImage(v, 0, 0, this.pv.width, this.pv.height); this.pvg.restore();
+    this.gotResult(res, t0, now() - t0);
+  },
+  gotResult(res, t0, cost) {
+    const t1 = now();
+    this.fails = 0;
+    this.cost = this.cost ? lerp(this.cost, cost, 0.25) : cost;
+    if (this.lastRunT) { this.gap = lerp(this.gap, clamp((t0 - this.lastRunT) / 1000, 0.01, 1), 0.25); this.hz = 1 / this.gap; }
+    this.lastRunT = t0; this.lag = lerp(this.lag, clamp((t1 - t0) / 1000, 0, 1), 0.3);
     this.feed(res, t0);
+    this.tune(cost);
+  },
+  // After the first few passes, keep whichever of GPU / CPU is faster on this device.
+  tune(cost) {
+    const B = this.bench;
+    if (!B || B.phase === 'done' || B.switching) return;
+    if (B.skip > 0) { B.skip--; return; }
+    B.s.push(cost);
+    const hopeless = B.s.length >= 2 && Math.min(...B.s) > 350;         // clearly unusable: don't wait for more samples
+    if (B.s.length < 5 && !hopeless) return;
+    const med = B.s.slice().sort((a, b) => a - b)[B.s.length >> 1];
+    const swap = (d) => { B.switching = true; B.s = []; B.skip = 2; this.setDelegate(d).catch(() => { B.phase = 'done'; }).then(() => { B.switching = false; this.cost = 0; }); };
+    if (B.phase === 'gpu') { B.gpu = med; if (med > 90) { B.phase = 'cpu'; swap('CPU'); } else B.phase = 'done'; }
+    else { B.phase = 'done'; if (med > B.gpu * 0.9) swap('GPU'); }
+  },
+  trackFailed() {
+    this.busy = false;
+    if (++this.fails < 3) return;
+    this.fails = 0;
+    if (this.delegate === 'GPU') { if (this.bench) this.bench.phase = 'done'; this.setDelegate('CPU').catch(() => {}); }    // GPU path is broken on this device
+    else { this.error = Object.assign({ code: 'unknown', detail: 'The hand tracker stopped responding.' }, CAM_ERRORS.unknown); this.state = 'error'; }
   },
 
   /* ----- one tracking result in -> gesture state out. Also used by tests. ----- */
@@ -2311,17 +2462,15 @@ const Gest = {
     if (raw === A.raw) A.rawN++; else { A.raw = raw; A.rawN = 1; }
     let changed = false;
     if (A.rawN >= S.holdFrames && this.stable !== raw) { this.stable = raw; changed = true; }
-    // 3. open palm = jump. A second jump (the double jump) needs the hand to really
-    //    close in between, so a flickering classifier cannot fire it by accident.
-    if (this.stable === 'palm') {
-      if (changed) {
-        if (A.armed) {
-          A.armed = false; this.ev.jump = true; this.lit.jump = t;
-          if (t - A.lastJump < 1.6) this.lit.djump = t;
-          A.lastJump = t;
-        }
-        A.palmOpen = h.open;
-      } else A.palmOpen = lerp(A.palmOpen, h.open, 0.4);
+    // 3. open palm = jump. Every jump needs the hand to really close first (openness drops,
+    //    or a fist / two-finger pose is seen), so a flickering classifier can't fire a double
+    //    jump by accident - but a quick open-close-open still works at low tracking rates.
+    if (raw === 'palm') {
+      if (A.rawN >= S.holdFrames && A.armed) {
+        A.armed = false; this.ev.jump = true; this.lit.jump = t;
+        if (t - A.lastJump < 1.6) this.lit.djump = t;
+        A.lastJump = t; A.palmOpen = h.open;
+      } else A.palmOpen = A.rawN === 1 ? h.open : lerp(A.palmOpen, h.open, 0.4);
       A.palmT = t; A.fistWait = 0;
     } else if (!A.armed && (h.open < A.palmOpen - G.reopenDrop || raw === 'fist' || raw === 'two' || t - A.palmT > G.rearmTime)) A.armed = true;
     // 4. fist = spin. In the air, right after an open palm, wait a moment first:
@@ -2330,7 +2479,7 @@ const Gest = {
       if (changed) {
         if (this.air && t - A.palmT < 0.7) A.fistWait = t + G.fistAirDelay;
         else { this.ev.spin = true; this.lit.spin = t; A.fistT = t; }
-      } else if (A.fistWait && t >= A.fistWait) { A.fistWait = 0; this.ev.spin = true; this.lit.spin = t; A.fistT = t; }
+      } else if (A.fistWait && t >= A.fistWait && raw === 'fist') { A.fistWait = 0; this.ev.spin = true; this.lit.spin = t; A.fistT = t; }   // still a fist: it was a spin after all
       else if (!A.fistWait && G.fistRepeat > 0 && t - A.fistT >= G.fistRepeat) { this.ev.spin = true; this.lit.spin = t; A.fistT = t; }
     } else A.fistWait = 0;
     // 5. finger-walk. Track the index fingertip relative to the middle fingertip.
@@ -2369,20 +2518,27 @@ const Gest = {
     this.walking = walking;
   },
 
-  /* ----- DIRECTION HAND: a fast swipe left or right ----- */
+  /* ----- DIRECTION HAND: a fast swipe left or right -----
+     Looks back over the last moments for a stretch where the hand travelled far
+     enough, fast enough. A really fast swipe often makes the tracker lose the hand
+     for a frame or two (it reappears further along), so a stretch that contains
+     such a gap only has to reach a fraction of the normal speed. */
   updateSwipe(h, t) {
     const D = this.D, G = TUNE.gesture, S = settings();
     while (D.samples.length && t - D.samples[0].t > G.swipeWindow) D.samples.shift();
-    if (!h) return;
+    if (!h) { D.lost = true; return; }
     D.scale = lerp(D.scale, h.scale, 0.3);
-    const cur = { t, x: h.cx * this.aspect };
+    const cur = { t, x: h.cx * this.aspect, gap: !!D.lost };
+    D.lost = false;
     D.samples.push(cur);
     if (t < D.coolT) return;
     const need = lerp(G.swipeSpeedHard, G.swipeSpeedEasy, clamp(S.swipeSens, 0, 1));
-    for (let i = 0; i < D.samples.length - 1; i++) {
+    let gap = false;
+    for (let i = D.samples.length - 2; i >= 0; i--) {
+      gap = gap || D.samples[i + 1].gap;
       const s = D.samples[i], dx = (cur.x - s.x) / D.scale, el = cur.t - s.t;
       if (el < 0.03 || D.samples.length - i < S.holdFrames) continue;       // must span the hold-frames count
-      if (Math.abs(dx) >= G.swipeTravel && Math.abs(dx) / el >= need) {
+      if (Math.abs(dx) >= G.swipeTravel && Math.abs(dx) / el >= need * (gap ? G.swipeGapFactor : 1)) {
         const dir = dx > 0 ? 1 : -1;
         if (dir === -D.lastDir && t < D.oppT) break;                         // that's the hand coming back
         this.ev.face = dir; this.lit[dir > 0 ? 'right' : 'left'] = t;
@@ -2393,18 +2549,20 @@ const Gest = {
   },
 
   /* ----- what the game reads ----- */
+  // "now" on the tracker's clock: gesture timestamps are camera-frame times, which trail real time by `lag`
+  clock() { return now() / 1000 - this.lag; },
   // run speed 0..1, including the "keep running for 0.4 s" grace
-  runValue() { return (now() / 1000 - this.walkT) <= TUNE.feel.runHold + 0.12 ? this.walkSpeed : 0; },
+  runValue() { return (this.clock() - this.walkT) <= TUNE.feel.runHold + this.gap ? this.walkSpeed : 0; },
   take() {                       // snapshot + clear the one-shot events
     const e = this.ev, out = { run: this.runValue(), face: e.face, jump: e.jump, spin: e.spin, palm: this.stable === 'palm' };
     e.face = 0; e.jump = e.spin = false;
     return out;
   },
-  handsVisible() { return now() / 1000 - this.seenAny < 0.35; },
-  actionVisible() { return now() / 1000 - this.seenAction < 0.5; },
+  handsVisible() { return this.clock() - this.seenAny < 0.3 + this.gap; },
+  actionVisible() { return this.clock() - this.seenAction < 0.45 + this.gap; },
   // which icon to show next to the camera preview
   icon() {
-    const t = now() / 1000, L = this.lit;
+    const t = this.clock(), L = this.lit;
     if (t - L.left < 0.5) return 'left';
     if (t - L.right < 0.5) return 'right';
     if (this.stable === 'palm') return 'palm';
@@ -2841,8 +2999,8 @@ Screens.test = {
     this.ui.slider(250, 162, 222, 'SWIPE SENS', () => S.swipeSens, (v) => { S.swipeSens = v; save(); });
     this.ui.slider(8, 196, 222, 'CONFIDENCE', () => (S.minScore - 0.3) / 0.6, (v) => { S.minScore = 0.3 + v * 0.6; save(); }, () => Math.round(S.minScore * 100) + '%');
     this.ui.slider(250, 196, 222, 'HOLD FRAMES', () => (S.holdFrames - 2) / 2, (v) => { S.holdFrames = 2 + Math.round(v * 2); save(); }, () => S.holdFrames, 3);
-    this.ui.button(8, 236, 150, 24, () => 'EASY RUN: ' + (S.easyRun ? 'ON' : 'OFF'), () => { S.easyRun = !S.easyRun; save(); });
-    this.ui.button(166, 236, 110, 24, 'DEFAULTS', () => { S.walkSens = G.walkSens; S.swipeSens = G.swipeSens; S.minScore = G.minScore; S.holdFrames = G.holdFrames; save(); });
+    this.ui.button(8, 236, 168, 24, () => 'EASY RUN: ' + (S.easyRun ? 'ON' : 'OFF'), () => { S.easyRun = !S.easyRun; save(); });
+    this.ui.button(184, 236, 108, 24, 'DEFAULTS', () => { S.walkSens = G.walkSens; S.swipeSens = G.swipeSens; S.minScore = G.minScore; S.holdFrames = G.holdFrames; save(); });
     this.ui.button(392, 236, 80, 24, 'BACK', () => this.back(), { back: true });
     this.ui.focus = 6;
   },
@@ -2850,7 +3008,7 @@ Screens.test = {
   back() { App.go(this.from === 'play' ? 'play' : 'menu', this.from === 'play' ? { resume: true } : undefined); },
   key(code) { return code === 'Space' || TEST_JUMP.has(code) || SPIN.has(code); },   // these light tiles instead of pressing buttons
   update(dt, gest) {
-    const t = now() / 1000, L = Gest.lit;
+    const t = Gest.clock(), L = Gest.lit;
     Gest.air = t - L.jump < 1.2;        // pretend to be airborne after a jump so open-close-open can be tried
     // the keyboard lights the same tiles, so this screen works without a camera too
     if (Input.any(LEFT) || Input.any(RIGHT)) L.run = t;
@@ -2860,27 +3018,27 @@ Screens.test = {
   },
   draw(ctx) {
     vista(ctx, App.t, 0.75);
-    const t = now() / 1000, L = Gest.lit, live = Gest.live;
+    const t = Gest.clock(), L = Gest.lit, live = Gest.live;
     text(ctx, 'GESTURE TEST', 8, 6, { s: 2, c: '#ffe36e' });
     const ph = live ? Math.min(112, Math.round(150 / Gest.aspect)) : 112, pw = live ? Math.round(ph * Gest.aspect) : 150;
     if (live) Gest.drawPreview(ctx, 8, 26, pw, ph, true);
     else { panel(ctx, 6, 24, 154, 116); ['NO CAMERA.', 'THE KEYBOARD', 'LIGHTS THE', 'TILES INSTEAD:', '', 'ARROWS  SPACE  X'].forEach((l, i) => text(ctx, l, 83, 40 + i * 14, { a: 'c', c: i === 5 ? '#b4fbff' : '#fff' })); }
-    text(ctx, live ? `TRACKING ${Math.round(Gest.hz)} HZ  ${Math.round(Gest.cost)} MS  ${Gest.delegate}` : 'TRACKING OFF', 8, 143, { c: '#b4fbff' });
-    text(ctx, `GAME ${Math.round(App.fps)} FPS`, 8, 152, { c: '#b4fbff' });
+    text(ctx, live ? `TRACKING ${Math.round(Gest.hz)} HZ ${Math.round(Gest.cost)} MS ${Gest.delegate}` : 'TRACKING OFF', 8, 143, { c: '#b4fbff' });
+    text(ctx, `GAME ${Math.round(App.fps)} FPS` + (live ? (Gest.mode === 'worker' ? '  (WORKER)' : '  (MAIN THREAD)') : ''), 8, 152, { c: '#b4fbff' });
     TEST_TILES.forEach((tile, i) => {
       const x = 168 + (i % 3) * 104, y = 26 + Math.floor(i / 3) * 58, age = t - L[tile.id], on = age < 0.45;
-      ctx.fillStyle = INK; ctx.fillRect(x, y + 2, 98, 52);
-      ctx.fillStyle = on ? '#fff' : '#8672b0'; ctx.fillRect(x, y, 98, 52);
-      ctx.fillStyle = on ? '#2fae5c' : '#241640'; ctx.fillRect(x + 2, y + 2, 94, 48);
-      drawSpr(ctx, SPR.icons[tile.icon], x + 17, y + 22);
-      tile.name.forEach((l, j) => text(ctx, l, x + 32, y + (tile.name.length > 1 ? 9 : 17) + j * 17, { s: 2, c: on ? '#fff' : '#b9bed3' }));
+      ctx.fillStyle = INK; ctx.fillRect(x, y + 2, 100, 52);
+      ctx.fillStyle = on ? '#fff' : '#8672b0'; ctx.fillRect(x, y, 100, 52);
+      ctx.fillStyle = on ? '#2fae5c' : '#241640'; ctx.fillRect(x + 2, y + 2, 96, 48);
+      drawSpr(ctx, SPR.icons[tile.icon], x + 14, y + 22);
+      tile.name.forEach((l, j) => text(ctx, l, x + 27, y + (tile.name.length > 1 ? 9 : 17) + j * 17, { s: 2, c: on ? '#fff' : '#b9bed3' }));
       if (tile.id === 'run') {       // run speed meter
         const sp = t - Gest.walkT < 0.5 ? Gest.walkSpeed : (Input.any(LEFT) || Input.any(RIGHT)) ? 1 : 0;
-        ctx.fillStyle = INK; ctx.fillRect(x + 6, y + 40, 86, 7); ctx.fillStyle = '#ffe36e'; ctx.fillRect(x + 7, y + 41, Math.round(84 * sp), 5);
+        ctx.fillStyle = INK; ctx.fillRect(x + 6, y + 40, 88, 7); ctx.fillStyle = '#ffe36e'; ctx.fillRect(x + 7, y + 41, Math.round(86 * sp), 5);
       }
     });
     this.ui.draw(ctx, 0);
-    if (live && !Gest.handsVisible()) text(ctx, 'HANDS NOT IN VIEW', 334, 243, { a: 'c', c: Math.floor(t * 3) % 2 ? '#ff7a6a' : '#ffb0a0' });
+    if (live && !Gest.handsVisible()) text(ctx, 'HANDS NOT', 342, 238, { a: 'c', c: Math.floor(t * 3) % 2 ? '#ff7a6a' : '#ffb0a0' }), text(ctx, 'IN VIEW', 342, 249, { a: 'c', c: Math.floor(t * 3) % 2 ? '#ff7a6a' : '#ffb0a0' });
   },
 };
 
@@ -2929,7 +3087,7 @@ Screens.play = {
     return true;
   },
   update(dt, gest) {
-    const G = TUNE.gesture, t = now() / 1000, h = Game.hero;
+    const G = TUNE.gesture, t = Gest.clock(), h = Game.hero;
     if (this.paused === 'hands') {
       // hands left the frame: wait for them, then a short countdown so nothing happens by surprise
       if (!Gest.live) { this.setPause('menu'); return; }
@@ -2940,19 +3098,22 @@ Screens.play = {
       return;
     }
     if (this.paused) return;
-    if (Gest.live && Game.state === 'play' && t - Gest.seenAny > G.handsLostPause) { this.setPause('hands'); return; }
+    if (Gest.live && Game.state === 'play' && t - Gest.seenAny > G.handsLostPause + Gest.gap) { this.setPause('hands'); return; }
     Gest.air = !h.onGround && h.airJumps < 1 && !h.inQuick;
     const ctl = Input.poll(gest), r = Game.update(dt, ctl);
     if (r === 'gameover') App.go('over'); else if (r === 'clear') App.go('clear');
   },
   draw(ctx) {
-    Game.draw(ctx);
+    Game.draw(ctx, !!this.paused);
     const live = Gest.live, t = now() / 1000;
     if (live) {
       const w = 80, hh = Math.round(w / Gest.aspect);
       Gest.drawPreview(ctx, VIEW_W - w - 4, 4, w, hh, false);
-      drawSpr(ctx, SPR.icons[Gest.icon()], VIEW_W - w - 18, 38);
-      if (!this.paused && Gest.handsVisible() && !Gest.actionVisible() && Math.floor(t * 3) % 2) text(ctx, 'SHOW YOUR ACTION HAND', VIEW_W - 4, hh + 10, { a: 'r', c: '#ffb0a0' });
+      if (!this.paused) {
+        const ic = SPR.icons[Gest.icon()];                            // detected gesture, drawn double size under the preview
+        ctx.drawImage(ic.c, VIEW_W - 4 - w / 2 - ic.w, hh + 9, ic.w * 2, ic.h * 2);
+        if (Gest.handsVisible() && !Gest.actionVisible() && Math.floor(t * 3) % 2) text(ctx, 'SHOW YOUR ACTION HAND', VIEW_W - 4, hh + 52, { a: 'r', c: '#ffb0a0' });
+      }
     } else if (App.sawTouch && !this.paused) {
       for (const b of TOUCH_BTNS) {
         ctx.globalAlpha = Input.touch[b.k] ? 0.75 : 0.4; ctx.fillStyle = INK; ctx.fillRect(b.x, b.y, b.w, b.h);
@@ -2961,7 +3122,7 @@ Screens.play = {
       }
     }
     if (!this.paused) { ctx.globalAlpha = 0.7; ctx.fillStyle = '#fff'; ctx.fillRect(235, 7, 3, 11); ctx.fillRect(242, 7, 3, 11); ctx.globalAlpha = 1; return; }
-    ctx.globalAlpha = 0.72; ctx.fillStyle = '#140c28'; ctx.fillRect(0, 0, VIEW_W, VIEW_H); ctx.globalAlpha = 1;
+    ctx.globalAlpha = 0.8; ctx.fillStyle = '#140c28'; ctx.fillRect(0, 0, VIEW_W, VIEW_H); ctx.globalAlpha = 1;
     if (this.paused === 'hands') {
       text(ctx, 'HANDS NOT IN VIEW', VIEW_W / 2, 30, { s: 4, a: 'c', c: '#ff7a6a' });
       const pw = 150, ph = Math.round(pw / Gest.aspect);
@@ -2993,7 +3154,7 @@ Screens.over = {
   gestureNav: () => true,
   back() { App.go('courses'); },
   draw(ctx) {
-    Game.draw(ctx);
+    Game.draw(ctx, true);
     ctx.globalAlpha = 0.78; ctx.fillStyle = '#140c28'; ctx.fillRect(0, 0, VIEW_W, VIEW_H); ctx.globalAlpha = 1;
     text(ctx, 'GAME OVER', VIEW_W / 2, 48, { s: 6, a: 'c', c: '#ff7a6a' });
     text(ctx, 'SCORE ' + String(Game.score).padStart(6, '0'), VIEW_W / 2, 112, { s: 2, a: 'c', c: '#ffe36e' });
