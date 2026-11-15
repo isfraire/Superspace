@@ -27,8 +27,10 @@ X spins, Esc/P pauses, M mutes, F toggles full screen. On a phone without the ca
 | Action | Open palm → close → open palm, in the air | Double jump |
 | Action | Fist | Spin attack |
 | Direction | Fast swipe left / right | Face that way |
+| Direction | Fast swipe while the hero is in the air (or just before a jump) | Air push — shoves the hero that way through the air |
 
 The hero keeps running for about 0.4 s after you stop finger-walking, and keeps that speed through a jump.
+From a standstill (for example, stopped against a block) a jump goes straight up — swipe the direction hand to push the hero over.
 The game pauses by itself when your hands leave the frame. In menus, swipe to move and hold an open palm to select.
 **Options → Easy run** lets you run by simply holding two fingers out.
 
