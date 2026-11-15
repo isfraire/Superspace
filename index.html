@@ -122,11 +122,14 @@ const TUNE = {
   },
 
   /* ---------- TRACKING LOAD -----------------------------------------
-     Tracking runs on its own schedule, never inside the game step. After
-     every hand-tracking pass the game is guaranteed `ceil(cost * budget)`
-     rendered frames before the next pass, which keeps it above 30 fps
-     even when a pass is slow. Raise `budget` for a smoother game and
-     slower tracking; lower it for the opposite.                        */
+     Hand tracking never runs inside the game step. Normally it runs in a
+     Web Worker, so the game keeps its frame rate however slow tracking is.
+     Where a worker can't be used it runs on the main thread, and after
+     every pass the game is guaranteed `ceil(passMilliseconds * budget)`
+     rendered frames before the next one, which holds it above 30 fps.
+     Raise `budget` for a smoother game and slower tracking (main-thread
+     mode only). maxHz caps tracking passes per second in both modes.
+     frameWidth is only used by the pixel-copy fallback.                  */
   tracking: { maxHz: 30, budget: 0.065, camWidth: 640, camHeight: 480, frameWidth: 400 },
 
   /* ---------- GAME FEEL (forgiveness) --------------------------------- */
@@ -134,7 +137,7 @@ const TUNE = {
     runHold: 0.40,        // seconds the hero keeps running after finger-walking stops
     airCarry: true,       // keep that run speed for the whole jump if it started while running
     landCarry: 0.30,      // ... and this long after landing
-    coyote: 0.18,         // seconds you can still jump after walking off a ledge
+    coyote: 0.22,         // seconds you can still jump after walking off a ledge
     jumpBuffer: 0.25,     // seconds an early jump input is remembered
     spinBuffer: 0.30,     // seconds an early spin input is remembered
     ledgeAssist: 9,       // pixels: clip a ledge by this much and you are lifted onto it
@@ -1087,12 +1090,12 @@ const WORLDS = {
   arctic: { name: 'ARCTIC', tint: '#d8f0ff', physics: { gravity: 1, jump: 1, accel: 0.35, friction: 0.12, maxFall: 1 } },
 };
 
-// On-screen coaching. cam = text when playing with gestures, key = with the keyboard.
+// On-screen coaching. cam = text when playing with gestures, key = with the keyboard, touch = with the touch buttons.
 const HINTS = {
-  start: { icon: 'run',  cam: ['FINGER-WALK TO RUN', 'SWIPE OTHER HAND TO TURN'], key: ['ARROW KEYS TO RUN'] },
-  jump:  { icon: 'palm', cam: ['OPEN PALM TO JUMP', 'OPEN-CLOSE-OPEN: DOUBLE JUMP'], key: ['SPACE TO JUMP', 'AGAIN IN THE AIR: DOUBLE JUMP'] },
+  start: { icon: 'run',  cam: ['FINGER-WALK TO RUN', 'SWIPE OTHER HAND TO TURN'], key: ['ARROW KEYS TO RUN'], touch: ['< AND > BUTTONS TO RUN'] },
+  jump:  { icon: 'palm', cam: ['OPEN PALM TO JUMP', 'OPEN-CLOSE-OPEN: DOUBLE JUMP'], key: ['SPACE TO JUMP', 'AGAIN IN THE AIR: DOUBLE JUMP'], touch: ['A BUTTON TO JUMP', 'AGAIN IN THE AIR: DOUBLE JUMP'] },
   stomp: { icon: 'palm', cam: ['LAND ON A GRUB TO STOMP IT'], key: ['LAND ON A GRUB TO STOMP IT'] },
-  spin:  { icon: 'fist', cam: ['MAKE A FIST TO SPIN', "SPIKY ONES: SPIN, DON'T STOMP"], key: ['PRESS X TO SPIN', "SPIKY ONES: SPIN, DON'T STOMP"] },
+  spin:  { icon: 'fist', cam: ['MAKE A FIST TO SPIN', "SPIKY ONES: SPIN, DON'T STOMP"], key: ['PRESS X TO SPIN', "SPIKY ONES: SPIN, DON'T STOMP"], touch: ['X BUTTON TO SPIN', "SPIKY ONES: SPIN, DON'T STOMP"] },
   quick: { icon: 'palm', cam: ['QUICKSAND!', 'KEEP JUMPING TO GET OUT'], key: ['QUICKSAND!', 'KEEP JUMPING TO GET OUT'] },
   gust:  { icon: 'wind', cam: ['SANDSTORM! GUSTS PUSH YOU', 'BACK - KEEP RUNNING'], key: ['SANDSTORM! GUSTS PUSH YOU', 'BACK - KEEP RUNNING'] },
   boss:  { icon: 'palm', cam: ['DODGE THE WORM. WHEN ITS HEAD', 'HITS THE SAND, JUMP ON IT!'], key: ['DODGE THE WORM. WHEN ITS HEAD', 'HITS THE SAND, JUMP ON IT!'] },
@@ -1549,10 +1552,10 @@ class Sandworm {
         this.hx = this.tx + (left < 0.9 ? Math.sin(t * 40) * 1.5 : 0); this.hy = gy - 15;
         this.ang = this.side > 0 ? 0.3 : Math.PI - 0.3;
         const top = this.hy - 18;
-        if (!h.dead && Math.abs(h.x - this.hx) < 27 && h.vy > 30 && !h.onGround && h.y >= top - 3 && h.y <= top + 16 + D.stompGrace) {
+        if (!h.dead && h.stun <= 0 && h.invuln < D.invuln - 0.9 && Math.abs(h.x - this.hx) < 27 && h.vy > 30 && !h.onGround && h.y >= top - 3 && h.y <= top + 16 + D.stompGrace) {
           this.hp--; this.flash = 0.6; this.vulnerable = false;
           h.vy = -T.stompBounceHeld; h.airJumps = 0; h.y = top;
-          Snd.sfx('bossHit'); G.shake(6, 0.4); G.addScore(500, this.hx, top - 10); G.burst(this.hx, top, 14, '#fff');
+          Snd.sfx('bossHit'); G.shake(6, 0.4); G.addScore(500, this.hx, top - 10); G.burst(this.hx, top, 14, '#fff'); G.freeze = 0.1;
           if (this.hp <= 0) { this.go('dying'); Snd.music(null); } else { this.go('recoil'); }
         } else if (!h.dead && Math.abs(h.x - this.hx) < 20 && h.y > top + 14) {
           h.x = this.hx + (h.x >= this.hx ? 20 : -20); h.vx = 0;      // dazed head just blocks the way
@@ -1721,7 +1724,7 @@ const Game = {
   boss: null, bossOn: false, bossDone: false,
   cam: { x: 0, y: 0 }, shakeT: 0, shakeA: 0,
   score: 0, crystals: 0, crystalsTotal: 0, lives: 0, time: 0, fruit: false,
-  state: 'play', stateT: 0, hint: null, hintT: 0, banner: null, shadeK: 1, windNow: 0,
+  state: 'play', stateT: 0, hint: null, banner: null, shadeK: 1, windNow: 0, freeze: 0,
 
   start(id) {
     const course = COURSES.find(c => c.id === id);
@@ -1759,7 +1762,7 @@ const Game = {
     });
     checks.sort((a, b) => a.x - b.x).forEach((c, i) => { c.i = i; c.on = i <= this.checkAt; });
     this.checks = checks;
-    this.boss = null; this.bossOn = false; this.state = 'play'; this.stateT = 0; this.hint = null; this.shadeK = 1;
+    this.boss = null; this.bossOn = false; this.state = 'play'; this.stateT = 0; this.hint = null; this.shadeK = 1; this.freeze = 0;
     for (const z of L.zones) { z.state = 'calm'; z.k = 0; }
     Snd.duck(false);
     if (!this.bossDone) Snd.music(this.world.music);
@@ -1853,9 +1856,9 @@ const Game = {
     h.inQuick = qt !== null && h.y > qt;
     if (h.inQuick) {
       if (Math.random() < dt * 14) this.dust(h.x + rnd(-6, 6), qt + 1, 1, this.world.quicksand[0]);
-      if (h.y - qt > D.quicksandDepth) {                 // swallowed: lose a pip and get spat back out
-        const pips = h.pips; h.invuln = 0; this.hurt(h.x - h.facing);
-        if (pips > 1) { h.vx = 0; h.vy = -T.jumpVel * 1.05; h.y = qt + 6; h.stun = 0.15; this.dust(h.x, qt, 14, this.world.quicksand[0]); Snd.sfx('quick'); }
+      if (h.y - qt > D.quicksandDepth) {                 // swallowed: lose a pip (unless still flashing) and get spat back out
+        this.hurt(h.x - h.facing);
+        if (!h.dead) { h.vx = 0; h.vy = -T.jumpVel * 1.05; h.y = qt + 6; h.stun = 0.15; this.dust(h.x, qt, 14, this.world.quicksand[0]); Snd.sfx('quick'); }
       }
     }
     // ---- boss arena walls, pits ----
@@ -1865,6 +1868,7 @@ const Game = {
 
   update(dt, ctl) {
     const h = this.hero, L = this.L, D = TUNE.difficulty, T = TUNE.hero;
+    if (this.freeze > 0) { this.freeze -= dt; return null; }        // hit-stop
     this.stateT += dt;
     if (this.state === 'play') this.time += dt;
     if (this.banner && (this.banner.t -= dt) <= 0) this.banner = null;
@@ -1905,7 +1909,10 @@ const Game = {
     }
     // pickups
     for (const p of this.pickups) {
-      if (p.loose) { p.vy += 500 * dt; p.x += p.vx * dt; p.y += p.vy * dt; if (p.y > L.arena.y - 10) { p.y = L.arena.y - 10; p.vy *= -0.5; p.vx *= 0.7; } }
+      if (p.loose) {
+        if (this.state === 'won' && this.stateT > 1.3) { p.x = lerp(p.x, h.x, Math.min(1, dt * 5)); p.y = lerp(p.y, h.y - 14, Math.min(1, dt * 5)); }   // victory: they fly to the hero
+        else { p.vy += 500 * dt; p.x += p.vx * dt; p.y += p.vy * dt; if (p.y > L.arena.y - 10) { p.y = L.arena.y - 10; p.vy *= -0.5; p.vx *= 0.7; } }
+      }
       if (h.dead || Math.abs(p.x - h.x) > 15 || p.y < h.y - h.h - 9 || p.y > h.y + 7) continue;
       p.gone = true; if (p.id >= 0) this.taken.add(p.id);
       if (p.kind === 'crystal') { this.crystals++; this.addScore(TUNE.score.crystal); Snd.sfx('crystal'); this.burst(p.x, p.y, 5, '#b4fbff'); }
@@ -1913,7 +1920,7 @@ const Game = {
     }
     this.pickups = this.pickups.filter(p => !p.gone);
     // checkpoints
-    for (const c of this.checks) if (!c.on && !h.dead && Math.abs(c.x - h.x) < 16 && Math.abs(c.y - h.y) < 48) {
+    for (const c of this.checks) if (!c.on && !h.dead && Math.abs(c.x - h.x) < 20 && h.y <= c.y + 8) {
       c.on = true; this.checkAt = Math.max(this.checkAt, c.i); this.respawnAt = { x: c.x, y: c.y };
       if (D.checkpointHeals) h.pips = D.pips;
       Snd.sfx('check'); this.popup('CHECKPOINT', c.x, c.y - 56, '#8dffc0'); this.burst(c.x, c.y - 36, 16, '#8dffc0');
@@ -1932,6 +1939,7 @@ const Game = {
     // boss
     if (L.arena && !this.bossOn && !this.bossDone && !h.dead && h.x > L.arena.x0 + 56 && this.course.boss && BOSSES[this.course.boss.type]) {
       this.bossOn = true; this.boss = BOSSES[this.course.boss.type].create(this, this.course.boss.tier, L.arena);
+      this.banner = { a: 'DANGER!', b: this.boss.name, t: 3.2 };
       Snd.music(this.world.bossMusic);
     }
     if (this.boss && !this.boss.dead) {
@@ -1992,7 +2000,7 @@ const Game = {
     for (const z of L.zones) if (z.type === 'shade' && this.shadeK > 0.02 && z.x1 > cx && z.x0 < cx + VIEW_W) {
       ctx.globalAlpha = this.shadeK * 0.86; ctx.fillStyle = '#160c2c'; ctx.fillRect(z.x0, z.r0 * TS, z.x1 - z.x0, (z.r1 - z.r0) * TS); ctx.globalAlpha = 1;
     }
-    for (const p of this.pops) if (p.t < 0.8 || Math.floor(p.t * 20) % 2) text(ctx, p.str, p.x, p.y - p.t * 22, { a: 'c', c: p.col });
+    for (const p of this.pops) if (p.t < 0.8 || Math.floor(p.t * 20) % 2) text(ctx, p.str, clamp(p.x, cx + Font.width(p.str, 2) / 2 + 2, cx + VIEW_W - Font.width(p.str, 2) / 2 - 2), p.y - 8 - p.t * 22, { s: 2, a: 'c', c: p.col });
     ctx.restore();
     this.drawWeather(ctx, cx);
     this.drawHUD(ctx, quiet);
@@ -2082,7 +2090,7 @@ const Game = {
     // coaching hint: under the HUD, left of the camera preview, so the ground stays visible
     const hint = !quiet && this.hint && HINTS[this.hint];
     if (hint && !(this.bossOn && this.boss && this.boss.state !== 'intro' && this.boss.state !== 'prowl')) {
-      const lines = camOn ? hint.cam : hint.key, w = Math.max(...lines.map(l => Font.width(l, 2))) + 38, hh = lines.length * 17 + 7;
+      const lines = camOn ? hint.cam : (App.sawTouch && hint.touch) || hint.key, w = Math.max(...lines.map(l => Font.width(l, 2))) + 38, hh = lines.length * 17 + 7;
       const x = Math.round(((camOn ? 372 : VIEW_W) - w) / 2), y = 30;
       ctx.globalAlpha = 0.72; ctx.fillStyle = '#140c28'; ctx.fillRect(x, y, w, hh); ctx.globalAlpha = 1;
       ctx.fillStyle = '#ffe36e'; ctx.fillRect(x, y, w, 1); ctx.fillRect(x, y + hh - 1, w, 1);
@@ -2159,12 +2167,12 @@ const HAND_LINKS = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 
 
 // Messages for everything that can go wrong starting the camera / tracker.
 const CAM_ERRORS = {
-  denied:   { title: 'CAMERA BLOCKED', lines: ['THE GAME NEEDS THE CAMERA TO SEE YOUR HANDS.', 'NOTHING IS RECORDED OR SENT ANYWHERE.', '', 'ALLOW THE CAMERA FOR THIS SITE IN YOUR', 'BROWSER SETTINGS, THEN TAP TRY AGAIN.'] },
-  insecure: { title: 'NEEDS A SECURE ADDRESS', lines: ['BROWSERS ONLY SHARE THE CAMERA WITH PAGES', 'OPENED OVER HTTPS. OPEN THE HTTPS ADDRESS', 'OF THIS GAME (GITHUB PAGES USES HTTPS).'] },
+  denied:   { title: 'CAMERA BLOCKED', lines: ['THE GAME NEEDS THE CAMERA TO SEE', 'YOUR HANDS. NOTHING IS RECORDED', 'OR SENT ANYWHERE.', '', 'ALLOW THE CAMERA FOR THIS SITE IN', 'YOUR BROWSER SETTINGS, THEN TAP', 'TRY AGAIN.'] },
+  insecure: { title: 'NEEDS A SECURE ADDRESS', lines: ['BROWSERS ONLY SHARE THE CAMERA WITH', 'PAGES OPENED OVER HTTPS.', '', 'OPEN THE HTTPS ADDRESS OF THIS GAME.', 'GITHUB PAGES USES HTTPS.'] },
   nocamera: { title: 'NO CAMERA FOUND', lines: ['THIS DEVICE DID NOT OFFER A CAMERA.', 'YOU CAN STILL PLAY WITH A KEYBOARD.'] },
-  busy:     { title: 'CAMERA IS BUSY', lines: ['ANOTHER APP OR TAB IS USING THE CAMERA.', 'CLOSE IT, THEN TAP TRY AGAIN.'] },
+  busy:     { title: 'CAMERA IS BUSY', lines: ['ANOTHER APP OR TAB IS USING THE', 'CAMERA. CLOSE IT, THEN TAP TRY AGAIN.'] },
   network:  { title: 'TRACKER DID NOT LOAD', lines: ['THE HAND TRACKING FILES COULD NOT BE', 'DOWNLOADED. CHECK YOUR CONNECTION,', 'THEN TAP TRY AGAIN.'] },
-  unknown:  { title: 'CAMERA PROBLEM', lines: ['SOMETHING WENT WRONG STARTING THE', 'CAMERA OR THE HAND TRACKER.'] },
+  unknown:  { title: 'CAMERA PROBLEM', lines: ['SOMETHING WENT WRONG STARTING THE', 'CAMERA OR THE HAND TRACKER.', 'TAP TRY AGAIN, OR RELOAD THE PAGE.'] },
 };
 
 const Gest = {
@@ -2200,19 +2208,19 @@ const Gest = {
     this.state = 'starting'; this.error = null;
     let phase = 'camera';
     try {
-      if (!window.isSecureContext) throw { code: 'insecure' };
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw { code: 'nocamera' };
+      if (!window.isSecureContext) throw { why: 'insecure' };
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw { why: 'nocamera' };
       const T = TUNE.tracking;
       if (!this.stream) this.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'user', width: { ideal: T.camWidth }, height: { ideal: T.camHeight }, frameRate: { ideal: 30 } } });
-      const v = this.video = document.getElementById('cam');
+      const v = this.video = document.getElementById('cam'), track = this.stream.getVideoTracks()[0];
+      if (track) track.onended = () => {             // camera unplugged, or permission taken away
+        this.stop(); this.error = Object.assign({ code: 'busy', detail: 'The camera stopped.' }, CAM_ERRORS.busy); this.state = 'error';
+      };
       v.srcObject = this.stream;
       await v.play();
       if (!v.videoWidth) await new Promise((res) => { v.addEventListener('loadeddata', res, { once: true }); setTimeout(res, 3000); });
-      this.aspect = (v.videoWidth || 4) / (v.videoHeight || 3);
-      this.pv = mkCanvas(160, Math.round(160 / this.aspect)); this.pvg = this.pv.getContext('2d');
-      this.pvn = mkCanvas(this.pv.width, this.pv.height); this.pvng = this.pvn.getContext('2d');
-      const cw = Math.min(T.frameWidth, v.videoWidth || T.frameWidth);
-      this.cap = mkCanvas(cw, Math.round(cw / this.aspect)); this.capg = this.cap.getContext('2d', { willReadFrequently: true });
+      this.sizeVideo();
+      v.onresize = () => this.sizeVideo();           // the stream changes shape if the phone is rotated
       this.state = 'loading'; phase = 'tracker';
       if (!this.mode) await this.initEngine();
       await this.warmUp();
@@ -2220,7 +2228,8 @@ const Gest = {
       this.bench = { phase: this.delegate === 'GPU' ? 'gpu' : 'done', s: [], gpu: 0, skip: 0, switching: false };
       this.state = 'ready';
     } catch (e) {
-      let code = e && e.code;
+      // (browser errors carry their own numeric .code, so our reasons travel in .why)
+      let code = e && typeof e.why === 'string' ? e.why : '';
       if (!code) {
         const n = (e && e.name) || '';
         code = phase === 'tracker' ? 'network'
@@ -2228,11 +2237,21 @@ const Gest = {
           : n === 'NotFoundError' || n === 'OverconstrainedError' || n === 'DevicesNotFoundError' ? 'nocamera'
           : n === 'NotReadableError' || n === 'AbortError' || n === 'TrackStartError' ? 'busy' : 'unknown';
       }
+      if (!CAM_ERRORS[code]) code = 'unknown';
       this.error = Object.assign({ code, detail: String((e && e.message) || '') }, CAM_ERRORS[code]);
       this.state = 'error';
       if (phase === 'camera') this.stop();
       console.warn('SUPERSPACE camera/tracker:', code, e);
     }
+  },
+  // (re)build the small canvases that depend on the camera's shape
+  sizeVideo() {
+    const v = this.video, T = TUNE.tracking;
+    this.aspect = (v.videoWidth || 4) / (v.videoHeight || 3);
+    this.pv = mkCanvas(160, Math.round(160 / this.aspect)); this.pvg = this.pv.getContext('2d');
+    this.pvn = mkCanvas(this.pv.width, this.pv.height); this.pvng = this.pvn.getContext('2d');
+    const cw = Math.min(T.frameWidth, v.videoWidth || T.frameWidth);
+    this.cap = mkCanvas(cw, Math.round(cw / this.aspect)); this.capg = this.cap.getContext('2d', { willReadFrequently: true });
   },
   // Prefer a worker; fall back to the main thread if the worker cannot run the tracker.
   async initEngine() {
@@ -2283,7 +2302,7 @@ const Gest = {
     if (this.stream) { for (const t of this.stream.getTracks()) t.stop(); this.stream = null; }
     if (this.video) this.video.srcObject = null;
     if (this.state === 'ready') this.state = 'off';
-    this.hands = []; this.action = this.dirHand = null;
+    this.hands = []; this.action = this.dirHand = null; this.busy = false;
   },
 
   /* ----- scheduling: called after every rendered game frame -----
@@ -2295,11 +2314,13 @@ const Gest = {
     if (this.state !== 'ready') return;
     const T = TUNE.tracking, t = now(), v = this.video;
     if (!v || v.readyState < 2 || v.paused || t - this.lastRunT < 1000 / T.maxHz) return;
+    const fresh = v.currentTime !== this.lastVideoT || t - this.lastRunT > 60;      // a new camera frame (or the clock isn't moving: just go)
     if (this.mode === 'worker') {
-      if (this.busy || v.currentTime === this.lastVideoT) return;
+      if (this.busy || !fresh) return;
       this.lastVideoT = v.currentTime; this.sendFrame(t);
       return;
     }
+    if (!fresh) return;
     if (this.pending) return;
     if (++this.since < Math.max(1, Math.ceil(this.cost * T.budget))) return;
     this.pending = true;
@@ -2314,7 +2335,7 @@ const Gest = {
     if (this.frameMode === 'bitmap') {
       createImageBitmap(v).then(
         (bmp) => { if (this.worker) this.worker.postMessage({ type: 'frame', bmp, t, check: !!this.warm }, [bmp]); else bmp.close(); },
-        () => { this.frameMode = 'pixels'; this.busy = false; });
+        () => { this.frameMode = 'pixels'; this.busy = false; if (this.warm) this.sendFrame(now()); });
     } else {
       const c = this.cap; this.capg.drawImage(v, 0, 0, c.width, c.height);
       const id = this.capg.getImageData(0, 0, c.width, c.height);
@@ -2344,7 +2365,7 @@ const Gest = {
   // main-thread mode
   trackMain() {
     const v = this.video;
-    if (this.state !== 'ready' || !v || v.readyState < 2 || v.paused || v.currentTime === this.lastVideoT) return;
+    if (this.state !== 'ready' || !v || v.readyState < 2 || v.paused) return;
     this.lastVideoT = v.currentTime;
     const t0 = now(); let res;
     try { res = this.recognizer.recognizeForVideo(v, t0); } catch (e) { this.trackFailed(); return; }
@@ -2454,9 +2475,11 @@ const Gest = {
     }
     // 1. raw pose for this frame. Open_Palm and Closed_Fist come from MediaPipe's
     //    built-in classifier; "two fingers" is read from the landmarks.
+    //    A light sanity check against the finger geometry stops a half-curled walking hand
+    //    from being taken for a fist, or two fingers for a palm.
     let raw = 'none';
-    if (h.g === 'Open_Palm' && h.gs >= S.minScore) raw = 'palm';
-    else if (h.g === 'Closed_Fist' && h.gs >= S.minScore) raw = 'fist';
+    if (h.g === 'Open_Palm' && h.gs >= S.minScore && h.r.filter(v => v > 1.45).length >= 3) raw = 'palm';
+    else if (h.g === 'Closed_Fist' && h.gs >= S.minScore && Math.max(h.r[0], h.r[1]) < 1.38) raw = 'fist';
     else if (h.twoPose || h.g === 'Victory') raw = 'two';
     // 2. a pose must hold for N tracking frames before it counts
     if (raw === A.raw) A.rawN++; else { A.raw = raw; A.rawN = 1; }
@@ -2704,10 +2727,11 @@ function cornerCam(ctx) {
   drawSpr(ctx, SPR.icons[Gest.icon()], VIEW_W - 5 - w / 2, h + 20);
 }
 const NAV_HINT = () => Gest.live ? 'HOLD AN OPEN PALM TO SELECT - SWIPE YOUR OTHER HAND TO MOVE' : 'ARROW KEYS + ENTER, OR TAP';
+const isFullscreen = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
 function toggleFullscreen() {
   const d = document, el = d.documentElement;
   try {
-    if (d.fullscreenElement || d.webkitFullscreenElement) (d.exitFullscreen || d.webkitExitFullscreen).call(d);
+    if (isFullscreen()) (d.exitFullscreen || d.webkitExitFullscreen).call(d);
     else {
       const rq = el.requestFullscreen || el.webkitRequestFullscreen; if (!rq) return;
       const p = rq.call(el, { navigationUI: 'hide' });
@@ -2729,16 +2753,16 @@ const Wake = {
 };
 
 const App = {
-  cur: null, name: '', t: 0, hold: 0, holdArmed: false, toast: null, fps: 60, sawTouch: false,
+  cur: null, name: '', t: 0, hold: 0, holdArmed: false, toast: null, fps: 60, sawTouch: false, noFullscreen: false, fade: 0,
   go(name, arg) {
     if (this.cur && this.cur.leave) this.cur.leave();
-    this.cur = Screens[name]; this.name = name; this.t = 0; this.hold = 0; this.holdArmed = false;
+    this.cur = Screens[name]; this.name = name; this.t = 0; this.hold = 0; this.holdArmed = false; this.fade = 1;
     Input.edges.clear();
     if (this.cur.enter) this.cur.enter(arg);
   },
   say(msg) { this.toast = { msg, t: 2.2 }; },
   update(dt) {
-    this.t += dt;
+    this.t += dt; this.fade = Math.max(0, this.fade - dt * 5);
     if (this.toast && (this.toast.t -= dt) <= 0) this.toast = null;
     const s = this.cur, gest = Gest.live ? Gest.take() : null;
     // gestures in menus: swipe = move, hold an open palm = select
@@ -2754,6 +2778,7 @@ const App = {
   draw() {
     const ctx = CTX;
     this.cur.draw(ctx);
+    if (this.fade > 0) { ctx.globalAlpha = Math.ceil(this.fade * 4) / 4; ctx.fillStyle = '#140c28'; ctx.fillRect(0, 0, VIEW_W, VIEW_H); ctx.globalAlpha = 1; }
     if (this.toast) {
       const w = Font.width(this.toast.msg, 2) + 20;
       ctx.fillStyle = INK; ctx.fillRect((VIEW_W - w) / 2, 124, w, 24); ctx.fillStyle = '#ffe36e'; ctx.fillRect((VIEW_W - w) / 2, 124, w, 1); ctx.fillRect((VIEW_W - w) / 2, 147, w, 1);
@@ -2831,10 +2856,10 @@ Screens.camError = {
   back() { App.go('menu'); },
   draw(ctx) {
     vista(ctx, App.t, 0.7);
-    const e = Gest.error || CAM_ERRORS.unknown;
-    text(ctx, e.title, VIEW_W / 2, 26, { s: 3, a: 'c', c: '#ff7a6a' });
-    e.lines.forEach((l, i) => text(ctx, l, VIEW_W / 2, 70 + i * 20, { s: 2, a: 'c' }));
-    if (e.detail) text(ctx, e.detail.slice(0, 76), VIEW_W / 2, 196, { a: 'c', c: '#b9bed3' });
+    const e = Gest.error && Gest.error.lines ? Gest.error : CAM_ERRORS.unknown;
+    text(ctx, e.title, VIEW_W / 2, 16, { s: 3, a: 'c', c: '#ff7a6a' });
+    e.lines.forEach((l, i) => text(ctx, l, VIEW_W / 2, 52 + i * 18, { s: 2, a: 'c' }));
+    if (e.detail) text(ctx, e.detail.slice(0, 76), VIEW_W / 2, 198, { a: 'c', c: '#b9bed3' });
     this.ui.draw(ctx, 0);
   },
 };
@@ -2968,7 +2993,7 @@ Screens.options = {
     this.ui.button(x, 44, w, 26, () => 'EASY RUN: ' + onoff(S.easyRun), flip('easyRun'));
     this.ui.button(x, 76, w, 26, () => 'MUSIC: ' + onoff(S.music), flip('music'));
     this.ui.button(x, 108, w, 26, () => 'SOUND EFFECTS: ' + onoff(S.sfx), flip('sfx'));
-    this.ui.button(x, 140, w, 26, 'FULL SCREEN', toggleFullscreen);
+    this.ui.button(x, 140, w, 26, 'FULL SCREEN', () => { App.noFullscreen = isFullscreen(); toggleFullscreen(); });
     this.ui.button(x, 172, w, 26, () => this.sure ? 'SURE? PRESS AGAIN' : 'ERASE SAVED DATA', () => { if (this.sure) { Save.reset(); Snd.applySettings(); App.say('SAVE DATA ERASED'); this.sure = false; } else this.sure = true; });
     this.ui.button(190, 212, 100, 24, 'BACK', () => App.go('menu'), { back: true });
   },
@@ -3030,8 +3055,8 @@ Screens.test = {
       ctx.fillStyle = INK; ctx.fillRect(x, y + 2, 100, 52);
       ctx.fillStyle = on ? '#fff' : '#8672b0'; ctx.fillRect(x, y, 100, 52);
       ctx.fillStyle = on ? '#2fae5c' : '#241640'; ctx.fillRect(x + 2, y + 2, 96, 48);
-      drawSpr(ctx, SPR.icons[tile.icon], x + 14, y + 22);
-      tile.name.forEach((l, j) => text(ctx, l, x + 27, y + (tile.name.length > 1 ? 9 : 17) + j * 17, { s: 2, c: on ? '#fff' : '#b9bed3' }));
+      drawSpr(ctx, SPR.icons[tile.icon], x + 13, y + 22);
+      tile.name.forEach((l, j) => text(ctx, l, x + 25, y + (tile.name.length > 1 ? 9 : 17) + j * 17, { s: 2, c: on ? '#fff' : '#b9bed3' }));
       if (tile.id === 'run') {       // run speed meter
         const sp = t - Gest.walkT < 0.5 ? Gest.walkSpeed : (Input.any(LEFT) || Input.any(RIGHT)) ? 1 : 0;
         ctx.fillStyle = INK; ctx.fillRect(x + 6, y + 40, 88, 7); ctx.fillStyle = '#ffe36e'; ctx.fillRect(x + 7, y + 41, Math.round(86 * sp), 5);
@@ -3098,6 +3123,8 @@ Screens.play = {
       return;
     }
     if (this.paused) return;
+    if (this.wasLive && !Gest.live) { this.wasLive = false; this.setPause('menu'); App.say('HAND TRACKING STOPPED'); return; }
+    this.wasLive = Gest.live;
     if (Gest.live && Game.state === 'play' && t - Gest.seenAny > G.handsLostPause + Gest.gap) { this.setPause('hands'); return; }
     Gest.air = !h.onGround && h.airJumps < 1 && !h.inQuick;
     const ctl = Input.poll(gest), r = Game.update(dt, ctl);
@@ -3189,14 +3216,14 @@ Screens.clear = {
   update() { const n = Math.min(this.rows.length, Math.floor(App.t / 0.45)); if (n > this.shown) { this.shown = n; Snd.sfx('tick'); } },
   draw(ctx) {
     vista(ctx, App.t, 0.6);
-    text(ctx, 'COURSE CLEAR!', VIEW_W / 2, 12, { s: 4, a: 'c', c: '#ffe36e' });
-    text(ctx, courseLabel(Game.course) + ' - ' + Game.course.name, VIEW_W / 2, 48, { s: 2, a: 'c', c: '#b4fbff' });
+    text(ctx, 'COURSE CLEAR!', VIEW_W / 2, 6, { s: 4, a: 'c', c: '#ffe36e' });
+    text(ctx, courseLabel(Game.course) + ' - ' + Game.course.name, VIEW_W / 2, 40, { s: 2, a: 'c', c: '#b4fbff' });
     panel(ctx, 70, 70, 340, 132);
     this.rows.slice(0, this.shown).forEach((r, i) => {
       const y = 80 + i * 23, last = i === this.rows.length - 1;
       text(ctx, r[0], 84, y, { s: 2, c: last ? '#ffe36e' : '#fff' }); text(ctx, r[1], 396, y, { s: 2, a: 'r', c: last ? '#ffe36e' : '#b4fbff' });
     });
-    if (this.record && this.shown >= this.rows.length && Math.floor(App.t * 4) % 2) text(ctx, 'NEW HIGH SCORE!', VIEW_W / 2, 60, { a: 'c', c: '#8dffc0' });
+    if (this.record && this.shown >= this.rows.length && Math.floor(App.t * 4) % 2) text(ctx, 'NEW HIGH SCORE!', VIEW_W / 2, 59, { a: 'c', c: '#8dffc0' });
     this.ui.draw(ctx, App.hold);
     text(ctx, NAV_HINT(), VIEW_W / 2, 256, { a: 'c' });
     cornerCam(ctx);
@@ -3217,10 +3244,13 @@ function fit() {      // largest 16:9 box that fits the window
 window.addEventListener('resize', fit); window.addEventListener('orientationchange', () => setTimeout(fit, 250));
 
 const toGame = (e) => { const r = canvas.getBoundingClientRect(); return [(e.clientX - r.left) / r.width * VIEW_W, (e.clientY - r.top) / r.height * VIEW_H]; };
-let firstTouch = true;
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault(); Snd.unlock(); Wake.on();
-  if (e.pointerType === 'touch') { App.sawTouch = true; if (firstTouch) { firstTouch = false; toggleFullscreen(); } }
+  if (e.pointerType === 'touch') {
+    App.sawTouch = true;
+    // go full screen on phones that allow it - but not while the camera permission prompt may be up, it would cancel it
+    if (!App.noFullscreen && !isFullscreen() && !['start', 'camInit', 'camError'].includes(App.name)) toggleFullscreen();
+  }
   const [x, y] = toGame(e); App.pointer('down', x, y, e.pointerId);
 });
 canvas.addEventListener('pointermove', (e) => { const [x, y] = toGame(e); App.pointer('move', x, y, e.pointerId); });
